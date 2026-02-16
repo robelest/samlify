@@ -1,0 +1,17 @@
+name: Runtime Guardrails
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - edge-runtime-core
+
+jobs:
+  forbidden-runtime-imports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Check forbidden Node imports in runtime packages
+        run: bun run check:runtime-imports

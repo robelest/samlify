@@ -1,0 +1,12 @@
+{
+  "name": "@samlify/core-xml",
+  "version": "0.0.0",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@xmldom/xmldom": "catalog:",
+    "camelcase": "catalog:",
+    "fontoxpath": "catalog:"
+  }
+}
