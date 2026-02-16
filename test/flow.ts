@@ -7,7 +7,7 @@ import * as url from 'url';
 import util from '../src/utility';
 import * as tk from 'timekeeper';
 
-import * as validator from '@authenio/samlify-xsd-schema-validator';
+import { DOMParser } from '@xmldom/xmldom';
 // import * as validator from '@authenio/samlify-validate-with-xmllint';
 // import * as validator from '@authenio/samlify-node-xmllint';
 // import * as validator from '@authenio/samlify-libxml-xsd';
@@ -17,7 +17,21 @@ import * as validator from '@authenio/samlify-xsd-schema-validator';
 // const validator = require('@authenio/samlify-node-xmllint');
 // const validator = require('@authenio/samlify-libxml-xsd');
 
-esaml2.setSchemaValidator(validator);
+function basicXmlValidate(xml: string): Promise<string> {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xml, 'text/xml');
+  const parseError = doc.getElementsByTagName('parsererror');
+  if (parseError.length > 0 || !doc.documentElement) {
+    return Promise.reject(new Error('ERR_INVALID_XML'));
+  }
+  return Promise.resolve('BASIC_XML_VALIDATION_OK');
+}
+
+esaml2.setSchemaValidator({
+  validate(xml: string) {
+    return basicXmlValidate(xml);
+  }
+});
 
 const isString = util.isString;
 
@@ -95,7 +109,7 @@ const parseRedirectUrlContextCallBack = (_context: string) => {
 
 // Build SimpleSign octetString
 const buildSimpleSignOctetString = (type:string, context:string, sigAlg:string|undefined, relayState:string|undefined, signature: string|undefined) =>{
-  const rawRequest = String(utility.base64Decode(context, true));
+  const rawRequest = String(utility.base64Decode(context));
   let octetString:string = '';
   octetString += type + '=' + rawRequest;
   if (relayState !== undefined && relayState.length > 0){
@@ -1126,7 +1140,7 @@ test('avoid malformatted response', async () => {
   // sender (caution: only use metadata and public key when declare pair-up in oppoent entity)
   const user = { email: 'user@email.com' };
   const { context: SAMLResponse } = await idpNoEncrypt.createLoginResponse(sp, sampleRequestInfo, 'post', user, createTemplateCallback(idpNoEncrypt, sp, binding.post, user));
-  const rawResponse = String(utility.base64Decode(SAMLResponse, true));
+  const rawResponse = String(utility.base64Decode(SAMLResponse));
   const attackResponse = `<NameID>evil@evil.com${rawResponse}</NameID>`;
   try {
     await sp.parseLoginResponse(idpNoEncrypt, 'post', { body: { SAMLResponse: utility.base64Encode(attackResponse) } });
@@ -1163,7 +1177,7 @@ test('avoid malformatted response with simplesign binding', async () => {
   // sender (caution: only use metadata and public key when declare pair-up in oppoent entity)
   const user = { email: 'user@email.com' };
   const { context: SAMLResponse, type, sigAlg, signature, relayState } = await idpNoEncrypt.createLoginResponse(sp, sampleRequestInfo, 'simpleSign', user, createTemplateCallback(idpNoEncrypt, sp, binding.simpleSign, user), undefined, 'relaystate');
-  const rawResponse = String(utility.base64Decode(SAMLResponse, true));
+  const rawResponse = String(utility.base64Decode(SAMLResponse));
   const attackResponse = `<NameID>evil@evil.com${rawResponse}</NameID>`;
   const octetString = buildSimpleSignOctetString(type, SAMLResponse, sigAlg, relayState, signature);
   try {
@@ -1219,6 +1233,63 @@ test('should use signed contents in signature wrapped response - case 2', async 
   const wrappedResponse = Buffer.from(xmlWrapped).toString('base64');
   const {extract} = await sp.parseLoginResponse(idpNoEncrypt, 'post', { body: { SAMLResponse: wrappedResponse } });
   expect(extract.nameID).toBe('user@esaml2.com');
+});
+
+test('should reject response with duplicate signed reference IDs', async () => {
+  const user = { email: 'user@esaml2.com' };
+  const { context: SAMLResponse } = await idpNoEncrypt.createLoginResponse(
+    sp,
+    sampleRequestInfo,
+    'post',
+    user,
+    createTemplateCallback(idpNoEncrypt, sp, binding.post, user)
+  );
+
+  const xml = Buffer.from(SAMLResponse, 'base64').toString();
+  const referenceMatch = xml.match(/Reference URI="#([^"]+)"/);
+  expect(referenceMatch).not.toBe(null);
+
+  const referenceId = referenceMatch![1];
+  const duplicateAssertion = `<saml:Assertion ID="${referenceId}" Version="2.0"></saml:Assertion>`;
+  const xmlWithDuplicateId = xml.replace(
+    /<\/samlp:Response>/,
+    `<saml:Advice>${duplicateAssertion}</saml:Advice></samlp:Response>`
+  );
+
+  try {
+    await sp.parseLoginResponse(idpNoEncrypt, 'post', {
+      body: { SAMLResponse: Buffer.from(xmlWithDuplicateId).toString('base64') },
+    });
+    expect(true).toBe(false);
+  } catch (e: any) {
+    expect(e.message).toContain('multiple elements with the same value for ID');
+  }
+});
+
+test('should reject signature with quoted reference URI', async () => {
+  const user = { email: 'user@esaml2.com' };
+  const { context: SAMLResponse } = await idpNoEncrypt.createLoginResponse(
+    sp,
+    sampleRequestInfo,
+    'post',
+    user,
+    createTemplateCallback(idpNoEncrypt, sp, binding.post, user)
+  );
+
+  const xml = Buffer.from(SAMLResponse, 'base64').toString();
+  const xmlWithBadReferenceUri = xml.replace(
+    /Reference URI="#([^"]+)"/,
+    `Reference URI="#$1'"`
+  );
+
+  try {
+    await sp.parseLoginResponse(idpNoEncrypt, 'post', {
+      body: { SAMLResponse: Buffer.from(xmlWithBadReferenceUri).toString('base64') },
+    });
+    expect(true).toBe(false);
+  } catch (e: any) {
+    expect(e.message).toBe('Cannot validate a uri with quotes inside it');
+  }
 });
 
 test('should throw two-tiers code error when the response does not return success status', async () => {

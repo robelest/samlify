@@ -8,10 +8,15 @@ const {
   ServiceProvider: serviceProvider,
   IdPMetadata: idpMetadata,
   SPMetadata: spMetadata,
+  setFileIO,
   Utility: utility,
   SamlLib: libsaml,
   Constants: ref,
 } = esaml2;
+
+setFileIO({
+  readFile: path => readFileSync(path),
+});
 
 const binding = ref.namespace.binding;
 const algorithms = ref.algorithms;
@@ -247,8 +252,55 @@ test('getAssertionConsumerService with two bindings', () => {
     const xml = String(readFileSync('./test/misc/signed_request_sha512.xml'));
     expect(libsaml.verifySignature(xml, { keyFile: './test/key/sp/cert.cer' })[0]).toBe(true);
   });
+  test('verify signature fails with mismatched keyFile even when KeyInfo is present', () => {
+    const xml = String(readFileSync('./test/misc/signed_request_sha256.xml'));
+    const [verified] = libsaml.verifySignature(xml, {
+      keyFile: './test/key/idp/cert.cer',
+      signatureAlgorithm: signatureAlgorithms.RSA_SHA256,
+    });
+    expect(verified).toBe(false);
+  });
   test('encrypt assertion test passes', async () => {
     await expect(libsaml.encryptAssertion(idp, sp, sampleSignedResponse)).resolves.not.toThrow();
+  });
+  test('encrypt and decrypt assertion with AES-128-GCM + RSA-OAEP', async () => {
+    const gcmIdp = identityProvider({
+      ...defaultIdpConfig,
+      dataEncryptionAlgorithm: algorithms.encryption.data.AES_128_GCM,
+      keyEncryptionAlgorithm: algorithms.encryption.key.RSA_OAEP_MGF1P,
+    } as any);
+
+    const encrypted = await libsaml.encryptAssertion(gcmIdp, sp, sampleSignedResponse);
+    const decrypted = await libsaml.decryptAssertion(sp, utility.base64Decode(encrypted) as string);
+
+    expect(decrypted[0].indexOf('EncryptedAssertion')).toBe(-1);
+    expect(decrypted[1].indexOf('Assertion')).toBeGreaterThan(-1);
+  });
+  test('encrypt and decrypt assertion with AES-256-GCM + RSA-OAEP', async () => {
+    const gcm256Idp = identityProvider({
+      ...defaultIdpConfig,
+      dataEncryptionAlgorithm: 'http://www.w3.org/2009/xmlenc11#aes256-gcm',
+      keyEncryptionAlgorithm: algorithms.encryption.key.RSA_OAEP_MGF1P,
+    } as any);
+
+    const encrypted = await libsaml.encryptAssertion(gcm256Idp, sp, sampleSignedResponse);
+    const decrypted = await libsaml.decryptAssertion(sp, utility.base64Decode(encrypted) as string);
+
+    expect(decrypted[0].indexOf('EncryptedAssertion')).toBe(-1);
+    expect(decrypted[1].indexOf('Assertion')).toBeGreaterThan(-1);
+  });
+  test('encrypt and decrypt assertion with 3DES + RSA-1_5', async () => {
+    const legacyIdp = identityProvider({
+      ...defaultIdpConfig,
+      dataEncryptionAlgorithm: algorithms.encryption.data.TRI_DEC,
+      keyEncryptionAlgorithm: algorithms.encryption.key.RSA_1_5,
+    } as any);
+
+    const encrypted = await libsaml.encryptAssertion(legacyIdp, sp, sampleSignedResponse);
+    const decrypted = await libsaml.decryptAssertion(sp, utility.base64Decode(encrypted) as string);
+
+    expect(decrypted[0].indexOf('EncryptedAssertion')).toBe(-1);
+    expect(decrypted[1].indexOf('Assertion')).toBeGreaterThan(-1);
   });
   test('encrypt assertion response without assertion returns error', async () => {
     await expect(() => libsaml.encryptAssertion(idp, sp, wrongResponse)).rejects.toThrow();
